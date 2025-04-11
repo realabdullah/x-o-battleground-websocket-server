@@ -2,9 +2,9 @@ import express from 'express';
 import http from 'http';
 import cors from 'cors';
 import { Server } from 'socket.io';
-import gameSocket from './sockets/gameSocket.ts';
-import { Logger } from './config/logger.ts';
-import indexRouter from './routes/index.ts';
+import gameSocket from './sockets/gameSocket';
+import { Logger } from './config/logger';
+import indexRouter from './routes/index';
 
 const app = express();
 

@@ -1,7 +1,7 @@
 import { Server, Socket } from 'socket.io';
-import { Logger } from '../config/logger.ts';
-import { createGameState, checkWinner, restartRound } from '../helpers/gameHelpers.ts';
-import { games } from '../models/games.ts';
+import { Logger } from '../config/logger';
+import { createGameState, checkWinner, restartRound } from '../helpers/gameHelpers';
+import { games } from '../models/games';
 
 const sendMessage = (socket: Socket, type: string, data: any) => {
   socket.emit('message', { type, data });
