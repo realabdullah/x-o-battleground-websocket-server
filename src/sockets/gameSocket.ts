@@ -1,7 +1,7 @@
 import { Server, Socket } from 'socket.io';
 import { Logger } from '../config/logger';
 import { createGameState, checkWinner, restartRound } from '../helpers/gameHelpers';
-import { games } from '../models/games';
+import { storageService } from '../services/storage';
 
 const sendMessage = (socket: Socket, type: string, data: any) => {
   socket.emit('message', { type, data });
@@ -22,18 +22,25 @@ export default (io: Server, socket: Socket) => {
 
   Logger.info(`Player connected: ${playerId} (${socket.id})`);
 
-  for (const [gameId, game] of Object.entries(games)) {
-    for (const symbol of ['X', 'O'] as const) {
-      if (game.players[symbol].id === playerId && gameId === clientGameId) {
-        socket.join(gameId);
-        socket.emit('reconnected', { type: 'reconnected', data: { game, symbol } });
-        Logger.info(`Player ${playerId} rejoined game ${gameId}`);
-        break;
+  // Check for existing games and reconnect if needed
+  const checkReconnection = async () => {
+    const games = await storageService.getAllGames();
+    console.log(games);
+    for (const [gameId, game] of Object.entries(games)) {
+      for (const symbol of ['X', 'O'] as const) {
+        if (game.players[symbol].id === playerId && gameId === clientGameId) {
+          socket.join(gameId);
+          socket.emit('reconnected', { type: 'reconnected', data: { game, symbol } });
+          Logger.info(`Player ${playerId} rejoined game ${gameId}`);
+          break;
+        }
       }
     }
-  }
+  };
 
-  socket.on('create game', (data: { name: string }) => {
+  checkReconnection();
+
+  socket.on('create game', async (data: { name: string }) => {
     try {
       const { name } = data;
       if (!clientGameId || !name) {
@@ -41,18 +48,21 @@ export default (io: Server, socket: Socket) => {
         return;
       }
 
-      if (games[clientGameId]) {
+      const existingGame = await storageService.getGame(clientGameId);
+      if (existingGame) {
         sendMessage(socket, 'error', 'Game already exists');
         return;
       }
 
-      games[clientGameId] = createGameState();
-      games[clientGameId].players.X.id = playerId;
-      games[clientGameId].players.X.name = name;
-      games[clientGameId].creator = playerId;
+      const newGame = createGameState();
+      newGame.players.X.id = playerId;
+      newGame.players.X.name = name;
+      newGame.creator = playerId;
+      
+      await storageService.setGame(clientGameId, newGame);
       socket.join(clientGameId);
 
-      sendMessage(socket, 'game created', { game: games[clientGameId], symbol: 'X' });
+      sendMessage(socket, 'game created', { game: newGame, symbol: 'X' });
       Logger.info(`Game ${clientGameId} created by ${playerId}`);
     } catch (err) {
       Logger.error(`Error in create game: ${err}`);
@@ -60,7 +70,7 @@ export default (io: Server, socket: Socket) => {
     }
   });
 
-  socket.on('join game', (data: { name: string }) => {
+  socket.on('join game', async (data: { name: string }) => {
     try {
       const { name } = data;
       if (!clientGameId || !name) {
@@ -68,7 +78,7 @@ export default (io: Server, socket: Socket) => {
         return;
       }
 
-      const game = games[clientGameId];
+      const game = await storageService.getGame(clientGameId);
       if (!game) {
         sendMessage(socket, 'error', 'Game not found');
         return;
@@ -85,11 +95,13 @@ export default (io: Server, socket: Socket) => {
       game.players[symbol].id = playerId;
       game.players[symbol].name = name;
 
+      await storageService.setGame(clientGameId, game);
       sendMessage(socket, 'game joined', game);
       Logger.info(`${playerId} joined game ${clientGameId} as ${symbol}`);
 
       if (game.players.X.id && game.players.O.id) {
         game.status = 'playing';
+        await storageService.setGame(clientGameId, game);
         broadcastMessage(clientGameId, 'game started', game, io);
         Logger.info(`Game ${clientGameId} started`);
       }
@@ -99,7 +111,7 @@ export default (io: Server, socket: Socket) => {
     }
   });
 
-  socket.on('make move', (data: { index: number }) => {
+  socket.on('make move', async (data: { index: number }) => {
     try {
       const { index } = data;
       if (index < 0 || index > 8) {
@@ -107,7 +119,7 @@ export default (io: Server, socket: Socket) => {
         return;
       }
 
-      const game = games[clientGameId];
+      const game = await storageService.getGame(clientGameId);
       if (!game) {
         sendMessage(socket, 'error', 'Game not found');
         return;
@@ -137,6 +149,7 @@ export default (io: Server, socket: Socket) => {
         else if (result === 'X' || result === 'O') game.scores[result] += 1;
       }
 
+      await storageService.setGame(clientGameId, game);
       broadcastMessage(clientGameId, 'game update', game, io);
       Logger.info(`Player ${playerId} made move at index ${index} in game ${clientGameId}`);
     } catch (err) {
@@ -145,9 +158,9 @@ export default (io: Server, socket: Socket) => {
     }
   });
 
-  socket.on('restart round', () => {
+  socket.on('restart round', async () => {
     try {
-      const game = games[clientGameId];
+      const game = await storageService.getGame(clientGameId);
       if (!game) {
         sendMessage(socket, 'error', 'Game not found');
         return;
@@ -159,6 +172,7 @@ export default (io: Server, socket: Socket) => {
       }
 
       restartRound(game);
+      await storageService.setGame(clientGameId, game);
       broadcastMessage(clientGameId, 'round restarted', game, io);
       Logger.info(`Round restarted for game ${clientGameId} (Round: ${game.round})`);
     } catch (err) {
@@ -167,16 +181,17 @@ export default (io: Server, socket: Socket) => {
     }
   });
 
-  socket.on('restart game', () => {
+  socket.on('restart game', async () => {
     try {
-      if (!clientGameId || !games[clientGameId]) {
+      if (!clientGameId) {
         sendMessage(socket, 'error', 'Game not found');
         return;
       }
 
-      games[clientGameId] = createGameState();
+      const newGame = createGameState();
+      await storageService.setGame(clientGameId, newGame);
 
-      broadcastMessage(clientGameId, 'game restarted', games[clientGameId], io);
+      broadcastMessage(clientGameId, 'game restarted', newGame, io);
       Logger.info(`Game ${clientGameId} fully restarted by ${playerId}`);
     } catch (err) {
       Logger.error(`Error restarting game: ${err}`);
@@ -184,9 +199,9 @@ export default (io: Server, socket: Socket) => {
     }
   });
 
-  socket.on('offer rematch', () => {
+  socket.on('offer rematch', async () => {
     try {
-      const game = games[clientGameId];
+      const game = await storageService.getGame(clientGameId);
       if (!game) {
         sendMessage(socket, 'error', 'Game not found');
         return;
@@ -200,8 +215,9 @@ export default (io: Server, socket: Socket) => {
     }
   });
 
-  socket.on('disconnect', () => {
+  socket.on('disconnect', async () => {
     Logger.warn(`Player disconnected: ${playerId}`);
+    const games = await storageService.getAllGames();
     for (const game of Object.values(games)) {
       for (const symbol of ['X', 'O'] as const) {
         if (game.players[symbol]?.id === playerId) {
