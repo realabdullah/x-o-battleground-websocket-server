@@ -19,8 +19,3 @@ export interface IGame {
   creator: string | null;
   winner: string | null;
 }
-
-export interface Config {
-  port: number;
-  nodeEnv: string;
-}
